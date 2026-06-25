@@ -1,6 +1,8 @@
 {
   "name": "tg-signal-bot",
   "version": "1.0.0",
+  "description": "Telegram trading signal bot",
+  "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
@@ -8,7 +10,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "node-cron": "^3.0.3",
-    "axios": "^1.6.0"
+    "node-cron": "3.0.3"
   }
 }
