@@ -4,6 +4,7 @@ const https = require('https');
 const http  = require('http');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const BOT_USERNAME = process.env.BOT_USERNAME || '';
 const GROUP_ID  = process.env.TELEGRAM_GROUP_1_ID; // Indonesian — CZ Group II
 const GROUP_EN  = process.env.TELEGRAM_GROUP_2_ID; // English   — CZ Group 01
 const GROUP_3   = '-1004464428901';                 // English   — CZ Group IV
@@ -171,6 +172,12 @@ function handleUpdate(update) {
   var userId = msg.from && msg.from.id;
   var text   = msg.text || msg.caption || '';
 
+  // /status command
+  if (text === '/status' || text === '/status@' + BOT_USERNAME) {
+    var inGroup = ALL_GROUPS.indexOf(chatId) !== -1;
+    if (!inGroup || isAdmin(chatId, userId)) { handleStatus(chatId); return; }
+  }
+
   // Only watch our four groups
   if (ALL_GROUPS.indexOf(chatId) === -1) return;
   // Admins are always exempt
@@ -196,10 +203,44 @@ function handleUpdate(update) {
   }
 }
 
+
+// ─── /status command ─────────────────────────────────────────────────────────
+function handleStatus(chatId) {
+  var wat = new Date(Date.now() + 60 * 60 * 1000);
+  var hh  = String(wat.getUTCHours()).padStart(2, '0');
+  var mm  = String(wat.getUTCMinutes()).padStart(2, '0');
+  var locked = isLockedNow() ? 'Yes' : 'No';
+  var groups = [
+    { id: GROUP_ID, name: 'CZ Group II (Indonesian)' },
+    { id: GROUP_EN, name: 'CZ Group 01 (English)' },
+    { id: GROUP_3,  name: 'CZ Group IV (English)' },
+    { id: GROUP_4,  name: 'CZ Group V22 (English)' }
+  ];
+  var groupLines = groups.map(function(g) {
+    return '  * ' + g.name + ': ' + (adminCache[g.id] ? 'connected' : 'not loaded');
+  }).join('\n');
+  sendTo(chatId,
+    '<b>Bot Status</b>\n' +
+    'Online: Yes\n' +
+    'Time (WAT): ' + hh + ':' + mm + '\n' +
+    'Silent lock: ' + locked + '\n\n' +
+    '<b>Groups:</b>\n' + groupLines + '\n\n' +
+    '<b>Daily Schedule (WAT):</b>\n' +
+    '05:00 AM - Morning greeting\n' +
+    '06:55 AM - Signal 1 warning\n' +
+    '07:00 AM - Signal 1 release\n' +
+    '09:55 AM - Signal 2 warning\n' +
+    '10:00 AM - Signal 2 release\n' +
+    '12:55 PM - VIP warning\n' +
+    '01:00 PM - VIP release\n' +
+    '05:00 PM - Good night'
+  );
+}
+
 telegramRequest('deleteWebhook', { drop_pending_updates: true }, function() {
   poll();
   console.log('[BOT] Polling started.');
-});;
+});
 
 // ─── Day name helpers (WAT = UTC+1) ──────────────────────────────────────────
 var DAYS_ID = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
