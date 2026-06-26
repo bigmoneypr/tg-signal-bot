@@ -178,6 +178,16 @@ function handleUpdate(update) {
     if (!inGroup || isAdmin(chatId, userId)) { handleStatus(chatId); return; }
   }
 
+  // /sendnow command
+  if (text.startsWith('/sendnow') || text.startsWith('/sendnow@' + BOT_USERNAME)) {
+    var inGroup2 = ALL_GROUPS.indexOf(chatId) !== -1;
+    if (!inGroup2 || isAdmin(chatId, userId)) {
+      var parts = text.split(' ');
+      handleSendNow(chatId, parts[1]);
+      return;
+    }
+  }
+
   // Only watch our four groups
   if (ALL_GROUPS.indexOf(chatId) === -1) return;
   // Admins are always exempt
@@ -203,6 +213,50 @@ function handleUpdate(update) {
   }
 }
 
+
+
+// ─── /sendnow command ─────────────────────────────────────────────────────────
+function handleSendNow(chatId, type) {
+  var d = watDay();
+  var messages = {
+    morning: {
+      id: '<b>Selamat pagi semua, selamat hari ' + ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'][d] + '! \uD83C\uDF05\nSemoga hari ini penuh berkah dan profit untuk kita semua.</b>',
+      en: '<b>Good morning everyone, happy ' + ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d] + '! \uD83C\uDF05\nWishing everyone a blessed and profitable day.</b>'
+    },
+    signal1: {
+      id: '<b>Sinyal Pertama dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+      en: '<b>First Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+    },
+    signal2: {
+      id: '<b>Sinyal Kedua dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+      en: '<b>Second Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+    },
+    vip: {
+      id: '<b>Sinyal VIP dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+      en: '<b>VIP Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+    },
+    goodnight: {
+      id: '<b>Selamat malam semua anggota! \uD83C\uDF19\nIstirahat yang baik, tidur nyenyak, dan semoga bermimpi indah. Sampai jumpa besok dengan sinyal-sinyal menguntungkan!</b>',
+      en: '<b>Good night to all members! \uD83C\uDF19\nRest well, sleep tight, and have a wonderful dream. See you tomorrow with more profitable signals!</b>'
+    }
+  };
+
+  var t = type ? type.toLowerCase().trim() : '';
+  if (!messages[t]) {
+    sendTo(chatId,
+      '<b>Usage: /sendnow [type]</b>\n\nAvailable types:\n' +
+      '  /sendnow morning\n' +
+      '  /sendnow signal1\n' +
+      '  /sendnow signal2\n' +
+      '  /sendnow vip\n' +
+      '  /sendnow goodnight'
+    );
+    return;
+  }
+
+  broadcast(messages[t].id, messages[t].en);
+  sendTo(chatId, 'Sent! <b>' + t + '</b> message broadcast to all 4 groups.');
+}
 
 // ─── /status command ─────────────────────────────────────────────────────────
 function handleStatus(chatId) {
