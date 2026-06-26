@@ -196,8 +196,10 @@ function handleUpdate(update) {
   }
 }
 
-poll();
-console.log('[BOT] Polling started.');
+telegramRequest('deleteWebhook', { drop_pending_updates: true }, function() {
+  poll();
+  console.log('[BOT] Polling started.');
+});;
 
 // ─── Day name helpers (WAT = UTC+1) ──────────────────────────────────────────
 var DAYS_ID = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
