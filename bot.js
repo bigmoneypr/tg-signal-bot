@@ -1,21 +1,32 @@
 'use strict';
 const cron = require('node-cron');
 const https = require('https');
+const http = require('http');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GROUP_ID = process.env.TELEGRAM_GROUP_1_ID; // Indonesian
-const GROUP_EN = process.env.TELEGRAM_GROUP_2_ID; // English
-const PORT = process.env.PORT || 3000;
+const GROUP_ID  = process.env.TELEGRAM_GROUP_1_ID; // Indonesian
+const GROUP_EN  = process.env.TELEGRAM_GROUP_2_ID; // English
+const PORT      = process.env.PORT || 3000;
+const SELF_URL  = 'https://tg-signal-bot-ehr4.onrender.com';
 
-require('http').createServer(function (req, res) {
+// ─── Health check server ──────────────────────────────────────────────────────
+http.createServer(function (req, res) {
   res.writeHead(200);
   res.end('OK');
 }).listen(PORT, function () {
-  console.log('Health server on port ' + PORT);
+  console.log('[BOT] Health server on port ' + PORT);
 });
 
-// ─── Telegram API ────────────────────────────────────────────────────────────
+// ─── Self-ping every 14 min to prevent service sleeping ──────────────────────
+setInterval(function () {
+  https.get(SELF_URL, function (res) {
+    console.log('[PING] Self-ping OK: ' + res.statusCode);
+  }).on('error', function (err) {
+    console.error('[PING] Self-ping error: ' + err.message);
+  });
+}, 14 * 60 * 1000);
 
+// ─── Telegram API ────────────────────────────────────────────────────────────
 function telegramRequest(method, payload, callback) {
   var body = JSON.stringify(payload);
   var options = {
@@ -30,20 +41,20 @@ function telegramRequest(method, payload, callback) {
     res.on('end', function () {
       try {
         var parsed = JSON.parse(data);
-        if (parsed.ok) callback(null, parsed.result);
-        else callback(new Error(parsed.description));
-      } catch (e) { callback(e); }
+        if (parsed.ok) { if (callback) callback(null, parsed.result); }
+        else { if (callback) callback(new Error(parsed.description)); }
+      } catch (e) { if (callback) callback(e); }
     });
   });
-  req.on('error', callback);
+  req.on('error', function (e) { if (callback) callback(e); });
   req.write(body);
   req.end();
 }
 
 function sendTo(groupId, text) {
-  telegramRequest('sendMessage', { chat_id: groupId, text: text, parse_mode: 'HTML' }, function (err) {
-    if (err) console.error('Send error to ' + groupId + ': ' + err.message);
-    else console.log('Sent to ' + groupId);
+  telegramRequest('sendMessage', { chat_id: groupId, text: text, parse_mode: 'HTML' }, function (err, result) {
+    if (err) console.error('[SEND ERROR] to ' + groupId + ': ' + err.message);
+    else console.log('[SENT] to ' + groupId + ' | msg_id=' + result.message_id);
   });
 }
 
@@ -57,8 +68,8 @@ function lockGroup(groupId) {
       can_send_other_messages: false, can_add_web_page_previews: false
     }
   }, function (err) {
-    if (err) console.error('Lock error ' + groupId + ': ' + err.message);
-    else console.log('Locked ' + groupId);
+    if (err) console.error('[LOCK ERROR] ' + groupId + ': ' + err.message);
+    else console.log('[LOCKED] ' + groupId);
   });
 }
 
@@ -72,28 +83,27 @@ function unlockGroup(groupId) {
       can_send_other_messages: true, can_add_web_page_previews: true
     }
   }, function (err) {
-    if (err) console.error('Unlock error ' + groupId + ': ' + err.message);
-    else console.log('Unlocked ' + groupId);
+    if (err) console.error('[UNLOCK ERROR] ' + groupId + ': ' + err.message);
+    else console.log('[UNLOCKED] ' + groupId);
   });
 }
 
-function deleteMessage(chatId, messageId) {
+function deleteMsg(chatId, messageId) {
   telegramRequest('deleteMessage', { chat_id: chatId, message_id: messageId }, function (err) {
-    if (err) console.error('Delete error: ' + err.message);
-    else console.log('Deleted message ' + messageId + ' in ' + chatId);
+    if (err) console.error('[DELETE ERROR] ' + err.message);
+    else console.log('[DELETED] msg ' + messageId + ' in ' + chatId);
   });
 }
 
-// ─── Admin cache (refreshed every 10 minutes) ────────────────────────────────
-
+// ─── Admin cache (refreshed every 10 min) ────────────────────────────────────
 var adminCache = {};
 
 function refreshAdmins(chatId) {
   telegramRequest('getChatAdministrators', { chat_id: chatId }, function (err, result) {
-    if (err) { console.error('Admin fetch error for ' + chatId + ': ' + err.message); return; }
+    if (err) { console.error('[ADMIN] Fetch error for ' + chatId + ': ' + err.message); return; }
     adminCache[chatId] = {};
-    result.forEach(function (member) { adminCache[chatId][member.user.id] = true; });
-    console.log('Admins refreshed for ' + chatId + ': ' + result.length + ' admins');
+    result.forEach(function (m) { adminCache[chatId][m.user.id] = true; });
+    console.log('[ADMIN] Refreshed ' + chatId + ': ' + result.length + ' admins');
   });
 }
 
@@ -101,61 +111,54 @@ function isAdmin(chatId, userId) {
   return adminCache[chatId] && adminCache[chatId][userId] === true;
 }
 
-// Refresh admins for both groups on startup and every 10 mins
 function refreshAllAdmins() { refreshAdmins(GROUP_ID); refreshAdmins(GROUP_EN); }
 refreshAllAdmins();
 setInterval(refreshAllAdmins, 10 * 60 * 1000);
 
-// ─── Banned word / link filter ────────────────────────────────────────────────
-
+// ─── Banned content filter ────────────────────────────────────────────────────
 var BANNED = [
   // English curses
-  'fuck', 'fucking', 'fucker', 'shit', 'bullshit', 'bitch', 'bastard', 'asshole',
-  'ass', 'dick', 'cock', 'pussy', 'cunt', 'whore', 'slut', 'nigger', 'faggot',
-  'motherfucker', 'damn', 'crap', 'piss', 'retard', 'idiot', 'moron', 'loser', 'stupid',
+  'fuck','fucking','fucker','shit','bullshit','bitch','bastard','asshole',
+  'ass','dick','cock','pussy','cunt','whore','slut','nigger','faggot',
+  'motherfucker','damn','crap','piss','retard','idiot','moron','loser','stupid',
   // Scam / fraud
-  'scam', 'scammer', 'fraud', 'fraudster', 'hack', 'hacker', 'phishing', 'ponzi',
-  'fake', 'cheat', 'cheater', 'steal', 'stolen', 'blackmail', 'sextortion',
-  'giveaway', 'doubling', 'free money', 'send me', 'dm me', 'dm for',
-  'investment opportunity', 'guaranteed profit', 'get rich',
+  'scam','scammer','fraud','fraudster','hack','hacker','phishing','ponzi',
+  'fake','cheat','cheater','steal','stolen','blackmail','sextortion',
+  'giveaway','doubling','free money','send me','dm me','dm for',
+  'investment opportunity','guaranteed profit','get rich',
   // Indonesian curses
-  'anjing', 'bangsat', 'babi', 'kontol', 'memek', 'jancok', 'jancuk', 'asu',
-  'goblok', 'tolol', 'bodoh', 'brengsek', 'kampret', 'bajingan', 'keparat',
-  'tai', 'pantek', 'setan', 'iblis', 'celaka', 'sialan', 'bedebah',
-  // Harsh / harassment
-  'kill yourself', 'kys', 'die', 'go die', 'shut up', 'stfu'
+  'anjing','bangsat','babi','kontol','memek','jancok','jancuk','asu',
+  'goblok','tolol','bodoh','brengsek','kampret','bajingan','keparat',
+  'tai','pantek','setan','iblis','celaka','sialan','bedebah',
+  // Harassment
+  'kill yourself','kys','go die','shut up','stfu'
 ];
 
-// Link pattern
 var LINK_PATTERN = /https?:\/\/|www\.|\.com\/|\.net\/|\.org\/|t\.me\/|bit\.ly|tinyurl/i;
 
-function containsBannedContent(text) {
+function isBanned(text) {
   if (!text) return false;
   var lower = text.toLowerCase();
-  // Check links
   if (LINK_PATTERN.test(text)) return true;
-  // Check banned words
   for (var i = 0; i < BANNED.length; i++) {
     var word = BANNED[i];
-    // Use word boundary check
     var idx = lower.indexOf(word);
     if (idx !== -1) {
       var before = idx === 0 || /\W/.test(lower[idx - 1]);
-      var after = idx + word.length >= lower.length || /\W/.test(lower[idx + word.length]);
+      var after  = idx + word.length >= lower.length || /\W/.test(lower[idx + word.length]);
       if (before && after) return true;
     }
   }
   return false;
 }
 
-// ─── Long polling ─────────────────────────────────────────────────────────────
-
+// ─── Long polling (reads all messages — requires Privacy Mode OFF in BotFather) ─
 var offset = 0;
 
 function poll() {
   telegramRequest('getUpdates', { offset: offset, timeout: 30, allowed_updates: ['message'] }, function (err, updates) {
     if (err) {
-      console.error('Poll error: ' + err.message);
+      console.error('[POLL ERROR] ' + err.message);
       setTimeout(poll, 5000);
       return;
     }
@@ -173,111 +176,133 @@ function handleUpdate(update) {
   var msg = update.message;
   if (!msg) return;
   var chatId = String(msg.chat.id);
-  var userId = msg.from && msg.from.id;
-  var text = msg.text || msg.caption || '';
+  var userId  = msg.from && msg.from.id;
+  var text    = msg.text || msg.caption || '';
 
-  // Only moderate our two groups
   if (chatId !== String(GROUP_ID) && chatId !== String(GROUP_EN)) return;
-  // Skip if sender is admin
   if (isAdmin(chatId, userId)) return;
-  // Check message content
-  if (containsBannedContent(text)) {
-    console.log('Banned content from user ' + userId + ' in ' + chatId + ': ' + text.substring(0, 50));
-    deleteMessage(chatId, msg.message_id);
-  }
-  // Also check forwarded messages and any attached link entities
-  if (msg.entities) {
-    msg.entities.forEach(function (entity) {
-      if (entity.type === 'url' || entity.type === 'text_link') {
-        if (!isAdmin(chatId, userId)) deleteMessage(chatId, msg.message_id);
-      }
+
+  var shouldDelete = isBanned(text);
+
+  if (!shouldDelete && msg.entities) {
+    msg.entities.forEach(function (e) {
+      if (e.type === 'url' || e.type === 'text_link') shouldDelete = true;
     });
   }
+
+  if (shouldDelete) {
+    console.log('[MODERATION] Deleting from user ' + userId + ': ' + text.substring(0, 60));
+    deleteMsg(chatId, msg.message_id);
+  }
 }
 
-// Start polling
 poll();
-console.log('Auto-moderation polling started.');
+console.log('[BOT] Polling started.');
 
-// ─── Day helpers ──────────────────────────────────────────────────────────────
+// ─── Day helpers (WAT = UTC+1) ────────────────────────────────────────────────
+var DAYS_ID = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
+var DAYS_EN = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-var DAYS_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-var DAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-function getWatDay() {
-  var watDate = new Date(Date.now() + 60 * 60 * 1000);
-  return watDate.getDay();
+function watDay() {
+  return new Date(Date.now() + 60 * 60 * 1000).getDay();
 }
 
-// ─── Cron schedule (all UTC = WAT - 1hr) ─────────────────────────────────────
+// ─── Schedule (cron = UTC = WAT - 1 hr) ──────────────────────────────────────
 
-// 5:00 AM WAT = 4:00 AM UTC — Morning unlock + greeting
+// 5:00 AM WAT = 4:00 AM UTC — Unlock + Good morning
 cron.schedule('0 4 * * *', function () {
-  var day = getWatDay();
-  unlockGroup(GROUP_ID); unlockGroup(GROUP_EN);
-  sendTo(GROUP_ID, '<b>Selamat pagi semua, selamat hari ' + DAYS_ID[day] + '! \uD83C\uDF05\nSemoga hari ini penuh berkah dan profit untuk kita semua.</b>');
-  sendTo(GROUP_EN, '<b>Good morning everyone, happy ' + DAYS_EN[day] + '! \uD83C\uDF05\nWishing everyone a blessed and profitable day.</b>');
+  console.log('[CRON] 5AM WAT — Morning unlock + greeting');
+  var d = watDay();
+  unlockGroup(GROUP_ID);
+  unlockGroup(GROUP_EN);
+  sendTo(GROUP_ID, '<b>Selamat pagi semua, selamat hari ' + DAYS_ID[d] + '! 🌅\nSemoga hari ini penuh berkah dan profit untuk kita semua.</b>');
+  sendTo(GROUP_EN, '<b>Good morning everyone, happy ' + DAYS_EN[d] + '! 🌅\nWishing everyone a blessed and profitable day.</b>');
 }, { timezone: 'UTC' });
 
 // 6:40 AM WAT = 5:40 AM UTC — Lock
-cron.schedule('40 5 * * *', function () { lockGroup(GROUP_ID); lockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 6:55 AM WAT = 5:55 AM UTC
-cron.schedule('55 5 * * *', function () {
-  sendTo(GROUP_ID, '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\nSinyal trading pertama hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\nThe first trading signal of the day is about to be released , please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+cron.schedule('40 5 * * *', function () {
+  console.log('[CRON] 6:40AM WAT — Lock');
+  lockGroup(GROUP_ID); lockGroup(GROUP_EN);
 }, { timezone: 'UTC' });
 
-// 7:00 AM WAT = 6:00 AM UTC
+// 6:55 AM WAT = 5:55 AM UTC — Signal 1 warning
+cron.schedule('55 5 * * *', function () {
+  console.log('[CRON] 6:55AM WAT — Signal 1 warning');
+  sendTo(GROUP_ID, '<b>Sinyal trading masuk 🚨🚨\nSinyal trading pertama hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
+  sendTo(GROUP_EN, '<b>Incoming trading signal 🚨🚨\nThe first trading signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+}, { timezone: 'UTC' });
+
+// 7:00 AM WAT = 6:00 AM UTC — Signal 1 release
 cron.schedule('0 6 * * *', function () {
+  console.log('[CRON] 7:00AM WAT — Signal 1 released');
   sendTo(GROUP_ID, '<b>Sinyal Pertama dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>First Signal released\nFollow Order\nExecute each trade accordingly And wait for the 2% profit</b>');
+  sendTo(GROUP_EN, '<b>First Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
 }, { timezone: 'UTC' });
 
 // 7:05 AM WAT = 6:05 AM UTC — Unlock
-cron.schedule('5 6 * * *', function () { unlockGroup(GROUP_ID); unlockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 9:40 AM WAT = 8:40 AM UTC — Lock
-cron.schedule('40 8 * * *', function () { lockGroup(GROUP_ID); lockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 9:55 AM WAT = 8:55 AM UTC
-cron.schedule('55 8 * * *', function () {
-  sendTo(GROUP_ID, '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal trading kedua hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSecond signal of the day is about to be released , please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+cron.schedule('5 6 * * *', function () {
+  console.log('[CRON] 7:05AM WAT — Unlock');
+  unlockGroup(GROUP_ID); unlockGroup(GROUP_EN);
 }, { timezone: 'UTC' });
 
-// 10:00 AM WAT = 9:00 AM UTC
+// 9:40 AM WAT = 8:40 AM UTC — Lock
+cron.schedule('40 8 * * *', function () {
+  console.log('[CRON] 9:40AM WAT — Lock');
+  lockGroup(GROUP_ID); lockGroup(GROUP_EN);
+}, { timezone: 'UTC' });
+
+// 9:55 AM WAT = 8:55 AM UTC — Signal 2 warning
+cron.schedule('55 8 * * *', function () {
+  console.log('[CRON] 9:55AM WAT — Signal 2 warning');
+  sendTo(GROUP_ID, '<b>Sinyal trading masuk 🚨🚨🚨\nSinyal trading kedua hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
+  sendTo(GROUP_EN, '<b>Incoming trading signal 🚨🚨🚨\nSecond signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+}, { timezone: 'UTC' });
+
+// 10:00 AM WAT = 9:00 AM UTC — Signal 2 release
 cron.schedule('0 9 * * *', function () {
+  console.log('[CRON] 10:00AM WAT — Signal 2 released');
   sendTo(GROUP_ID, '<b>Sinyal Kedua dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>Second Signal released\nFollow Order\nExecute each trade accordingly And wait for the 2% profit</b>');
+  sendTo(GROUP_EN, '<b>Second Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
 }, { timezone: 'UTC' });
 
 // 10:05 AM WAT = 9:05 AM UTC — Unlock
-cron.schedule('5 9 * * *', function () { unlockGroup(GROUP_ID); unlockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 12:40 PM WAT = 11:40 AM UTC — Lock
-cron.schedule('40 11 * * *', function () { lockGroup(GROUP_ID); lockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 12:55 PM WAT = 11:55 AM UTC
-cron.schedule('55 11 * * *', function () {
-  sendTo(GROUP_ID, '<b>Sinyal VIP akan segera hadir \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal VIP akan dirilis dalam 5 menit ke depan. Harap bersiap dan jangan lewatkan sesi trading apapun, karena tidak ada sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>VIP Signals are coming soon \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nVIP signals will be released in the next 5 minutes. Please be prepared and don\'t miss any trading sessions, as no signals are missed</b>');
+cron.schedule('5 9 * * *', function () {
+  console.log('[CRON] 10:05AM WAT — Unlock');
+  unlockGroup(GROUP_ID); unlockGroup(GROUP_EN);
 }, { timezone: 'UTC' });
 
-// 1:00 PM WAT = 12:00 PM UTC
+// 12:40 PM WAT = 11:40 AM UTC — Lock
+cron.schedule('40 11 * * *', function () {
+  console.log('[CRON] 12:40PM WAT — Lock');
+  lockGroup(GROUP_ID); lockGroup(GROUP_EN);
+}, { timezone: 'UTC' });
+
+// 12:55 PM WAT = 11:55 AM UTC — VIP warning
+cron.schedule('55 11 * * *', function () {
+  console.log('[CRON] 12:55PM WAT — VIP warning');
+  sendTo(GROUP_ID, '<b>Sinyal VIP akan segera hadir 🚨🚨🚨\nSinyal VIP akan dirilis dalam 5 menit ke depan. Harap bersiap dan jangan lewatkan sesi trading apapun, karena tidak ada sinyal yang terlewat</b>');
+  sendTo(GROUP_EN, '<b>VIP Signals are coming soon 🚨🚨🚨\nVIP signals will be released in the next 5 minutes. Please be prepared and don\'t miss any trading sessions, as no signals are missed</b>');
+}, { timezone: 'UTC' });
+
+// 1:00 PM WAT = 12:00 PM UTC — VIP release
 cron.schedule('0 12 * * *', function () {
+  console.log('[CRON] 1:00PM WAT — VIP Signal released');
   sendTo(GROUP_ID, '<b>Sinyal VIP dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>VIP Signal released\nFollow Order\nExecute each trade accordingly And wait for the 2% profit</b>');
+  sendTo(GROUP_EN, '<b>VIP Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
 }, { timezone: 'UTC' });
 
 // 1:05 PM WAT = 12:05 PM UTC — Unlock
-cron.schedule('5 12 * * *', function () { unlockGroup(GROUP_ID); unlockGroup(GROUP_EN); }, { timezone: 'UTC' });
-
-// 5:00 PM WAT = 4:00 PM UTC — Night lock + goodnight
-cron.schedule('0 16 * * *', function () {
-  lockGroup(GROUP_ID); lockGroup(GROUP_EN);
-  sendTo(GROUP_ID, '<b>Selamat malam semua anggota! \uD83C\uDF19\nIstirahat yang baik, tidur nyenyak, dan semoga bermimpi indah. Sampai jumpa besok dengan sinyal-sinyal menguntungkan!</b>');
-  sendTo(GROUP_EN, '<b>Good night to all members! \uD83C\uDF19\nRest well, sleep tight, and have a wonderful dream. See you tomorrow with more profitable signals!</b>');
+cron.schedule('5 12 * * *', function () {
+  console.log('[CRON] 1:05PM WAT — Unlock');
+  unlockGroup(GROUP_ID); unlockGroup(GROUP_EN);
 }, { timezone: 'UTC' });
 
-console.log('Bot fully started. Scheduler + auto-moderation active.');
+// 5:00 PM WAT = 4:00 PM UTC — Lock + Good night
+cron.schedule('0 16 * * *', function () {
+  console.log('[CRON] 5:00PM WAT — Night lock + goodnight');
+  lockGroup(GROUP_ID); lockGroup(GROUP_EN);
+  sendTo(GROUP_ID, '<b>Selamat malam semua anggota! 🌙\nIstirahat yang baik, tidur nyenyak, dan semoga bermimpi indah. Sampai jumpa besok dengan sinyal-sinyal menguntungkan!</b>');
+  sendTo(GROUP_EN, '<b>Good night to all members! 🌙\nRest well, sleep tight, and have a wonderful dream. See you tomorrow with more profitable signals!</b>');
+}, { timezone: 'UTC' });
+
+console.log('[BOT] Fully started — scheduler + auto-moderation + self-ping active.');
