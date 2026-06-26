@@ -1,13 +1,20 @@
 'use strict';
-const cron = require('node-cron');
+const cron  = require('node-cron');
 const https = require('https');
 const http  = require('http');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROUP_ID  = process.env.TELEGRAM_GROUP_1_ID; // Indonesian — CZ Group II
 const GROUP_EN  = process.env.TELEGRAM_GROUP_2_ID; // English   — CZ Group 01
+const GROUP_3   = '-1004464428901';                 // English   — CZ Group IV
+const GROUP_4   = '-1004291796500';                 // English   — CZ Group V22
 const PORT      = process.env.PORT || 3000;
 const SELF_URL  = 'https://tg-signal-bot-ehr4.onrender.com';
+
+// All groups (for admin cache + moderation)
+var ALL_GROUPS = [GROUP_ID, GROUP_EN, GROUP_3, GROUP_4];
+// All English groups
+var EN_GROUPS  = [GROUP_EN, GROUP_3, GROUP_4];
 
 // ─── Health server ────────────────────────────────────────────────────────────
 http.createServer(function (req, res) {
@@ -17,7 +24,7 @@ http.createServer(function (req, res) {
 // ─── Self-ping every 14 min (keeps Render awake) ─────────────────────────────
 setInterval(function () {
   var req = https.get(SELF_URL, function (res) {
-    res.resume(); // drain response to free socket
+    res.resume();
     console.log('[PING] OK: ' + res.statusCode);
   });
   req.on('error', function (err) { console.error('[PING] Error: ' + err.message); });
@@ -25,7 +32,7 @@ setInterval(function () {
 
 // ─── Telegram API ─────────────────────────────────────────────────────────────
 function telegramRequest(method, payload, callback) {
-  var body = JSON.stringify(payload);
+  var body    = JSON.stringify(payload);
   var options = {
     hostname: 'api.telegram.org',
     path: '/bot' + BOT_TOKEN + '/' + method,
@@ -55,6 +62,12 @@ function sendTo(groupId, text) {
   });
 }
 
+// Send Indonesian to GROUP_ID, English to all EN_GROUPS
+function broadcast(idText, enText) {
+  sendTo(GROUP_ID, idText);
+  EN_GROUPS.forEach(function (g) { sendTo(g, enText); });
+}
+
 function deleteMsg(chatId, messageId) {
   telegramRequest('deleteMessage', { chat_id: chatId, message_id: messageId }, function (err) {
     if (err) console.error('[DELETE ERROR] ' + err.message);
@@ -78,23 +91,25 @@ function isAdmin(chatId, userId) {
   return adminCache[chatId] && adminCache[chatId][userId] === true;
 }
 
-function refreshAllAdmins() { refreshAdmins(GROUP_ID); refreshAdmins(GROUP_EN); }
+function refreshAllAdmins() {
+  ALL_GROUPS.forEach(function (g) { refreshAdmins(g); });
+}
 refreshAllAdmins();
 setInterval(refreshAllAdmins, 10 * 60 * 1000);
 
 // ─── Silent lock windows (WAT = UTC+1) ───────────────────────────────────────
-// Non-admin messages sent during these windows are silently deleted.
-// No setChatPermissions used — no Telegram announcements.
+// Non-admin messages during these windows are silently deleted.
+// No setChatPermissions used — zero Telegram announcements.
 //
 // Locked (WAT):  overnight 5PM–5AM | 6:40–7:05 | 9:40–10:05 | 12:40–13:05
 
 function isLockedNow() {
   var wat = new Date(Date.now() + 60 * 60 * 1000);
   var t   = wat.getUTCHours() * 60 + wat.getUTCMinutes();
-  if (t < 300 || t >= 1020)                      return true; // overnight
-  if (t >= 400  && t < 425)                       return true; // 6:40–7:05
-  if (t >= 580  && t < 605)                       return true; // 9:40–10:05
-  if (t >= 760  && t < 785)                       return true; // 12:40–13:05
+  if (t < 300 || t >= 1020)         return true; // overnight 5PM–5AM
+  if (t >= 400  && t < 425)         return true; // 6:40–7:05 AM
+  if (t >= 580  && t < 605)         return true; // 9:40–10:05 AM
+  if (t >= 760  && t < 785)         return true; // 12:40–1:05 PM
   return false;
 }
 
@@ -150,21 +165,25 @@ function poll() {
 }
 
 function handleUpdate(update) {
-  var msg = update.message;
+  var msg    = update.message;
   if (!msg) return;
   var chatId = String(msg.chat.id);
   var userId = msg.from && msg.from.id;
   var text   = msg.text || msg.caption || '';
 
-  if (chatId !== String(GROUP_ID) && chatId !== String(GROUP_EN)) return;
+  // Only watch our four groups
+  if (ALL_GROUPS.indexOf(chatId) === -1) return;
+  // Admins are always exempt
   if (isAdmin(chatId, userId)) return;
 
+  // Silent lock: instantly delete non-admin messages during locked windows
   if (isLockedNow()) {
     console.log('[LOCK] Silent delete from user ' + userId + ' in ' + chatId);
     deleteMsg(chatId, msg.message_id);
     return;
   }
 
+  // Auto-moderation: delete banned words / links anytime
   var del = isBanned(text);
   if (!del && msg.entities) {
     msg.entities.forEach(function (e) {
@@ -189,64 +208,80 @@ function watDay() {
 }
 
 // ─── Cron schedule ────────────────────────────────────────────────────────────
-// Render servers run in UTC. WAT = UTC+1, so cron times = WAT time minus 1 hour.
-// NO timezone option — node-cron uses server local time (UTC) directly.
+// Render runs in UTC. WAT = UTC+1, so cron times = WAT minus 1 hour.
+// No {timezone} option — uses server local time (UTC) directly.
 
-// 5:00 AM WAT = 04:00 UTC
+// 5:00 AM WAT = 04:00 UTC — Morning greeting
 cron.schedule('0 4 * * *', function () {
   console.log('[CRON] 5:00 AM WAT — Morning greeting');
   var d = watDay();
-  sendTo(GROUP_ID, '<b>Selamat pagi semua, selamat hari ' + DAYS_ID[d] + '! \uD83C\uDF05\nSemoga hari ini penuh berkah dan profit untuk kita semua.</b>');
-  sendTo(GROUP_EN, '<b>Good morning everyone, happy ' + DAYS_EN[d] + '! \uD83C\uDF05\nWishing everyone a blessed and profitable day.</b>');
+  broadcast(
+    '<b>Selamat pagi semua, selamat hari ' + DAYS_ID[d] + '! \uD83C\uDF05\nSemoga hari ini penuh berkah dan profit untuk kita semua.</b>',
+    '<b>Good morning everyone, happy ' + DAYS_EN[d] + '! \uD83C\uDF05\nWishing everyone a blessed and profitable day.</b>'
+  );
 });
 
-// 6:55 AM WAT = 05:55 UTC
+// 6:55 AM WAT = 05:55 UTC — Signal 1 warning
 cron.schedule('55 5 * * *', function () {
   console.log('[CRON] 6:55 AM WAT — Signal 1 warning');
-  sendTo(GROUP_ID, '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\nSinyal trading pertama hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\nThe first trading signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+  broadcast(
+    '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\nSinyal trading pertama hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>',
+    '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\nThe first trading signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>'
+  );
 });
 
-// 7:00 AM WAT = 06:00 UTC
+// 7:00 AM WAT = 06:00 UTC — Signal 1 release
 cron.schedule('0 6 * * *', function () {
   console.log('[CRON] 7:00 AM WAT — Signal 1 released');
-  sendTo(GROUP_ID, '<b>Sinyal Pertama dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>First Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
+  broadcast(
+    '<b>Sinyal Pertama dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+    '<b>First Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+  );
 });
 
-// 9:55 AM WAT = 08:55 UTC
+// 9:55 AM WAT = 08:55 UTC — Signal 2 warning
 cron.schedule('55 8 * * *', function () {
   console.log('[CRON] 9:55 AM WAT — Signal 2 warning');
-  sendTo(GROUP_ID, '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal trading kedua hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSecond signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>');
+  broadcast(
+    '<b>Sinyal trading masuk \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal trading kedua hari ini akan segera dirilis, harap bersiap dan jangan sampai melewatkan sesi trading karena tidak ada kompensasi untuk sinyal yang terlewat</b>',
+    '<b>Incoming trading signal \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSecond signal of the day is about to be released, please be prepared and never miss out on the trade sessions because there\'s no compensation for missed signals</b>'
+  );
 });
 
-// 10:00 AM WAT = 09:00 UTC
+// 10:00 AM WAT = 09:00 UTC — Signal 2 release
 cron.schedule('0 9 * * *', function () {
   console.log('[CRON] 10:00 AM WAT — Signal 2 released');
-  sendTo(GROUP_ID, '<b>Sinyal Kedua dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>Second Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
+  broadcast(
+    '<b>Sinyal Kedua dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+    '<b>Second Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+  );
 });
 
-// 12:55 PM WAT = 11:55 UTC
+// 12:55 PM WAT = 11:55 UTC — VIP warning
 cron.schedule('55 11 * * *', function () {
   console.log('[CRON] 12:55 PM WAT — VIP warning');
-  sendTo(GROUP_ID, '<b>Sinyal VIP akan segera hadir \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal VIP akan dirilis dalam 5 menit ke depan. Harap bersiap dan jangan lewatkan sesi trading apapun, karena tidak ada sinyal yang terlewat</b>');
-  sendTo(GROUP_EN, '<b>VIP Signals are coming soon \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nVIP signals will be released in the next 5 minutes. Please be prepared and don\'t miss any trading sessions, as no signals are missed</b>');
+  broadcast(
+    '<b>Sinyal VIP akan segera hadir \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nSinyal VIP akan dirilis dalam 5 menit ke depan. Harap bersiap dan jangan lewatkan sesi trading apapun, karena tidak ada sinyal yang terlewat</b>',
+    '<b>VIP Signals are coming soon \uD83D\uDEA8\uD83D\uDEA8\uD83D\uDEA8\nVIP signals will be released in the next 5 minutes. Please be prepared and don\'t miss any trading sessions, as no signals are missed</b>'
+  );
 });
 
-// 1:00 PM WAT = 12:00 UTC
+// 1:00 PM WAT = 12:00 UTC — VIP release
 cron.schedule('0 12 * * *', function () {
   console.log('[CRON] 1:00 PM WAT — VIP released');
-  sendTo(GROUP_ID, '<b>Sinyal VIP dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>');
-  sendTo(GROUP_EN, '<b>VIP Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>');
+  broadcast(
+    '<b>Sinyal VIP dirilis\nIkuti Perintah\nEksekusi setiap trade sesuai dan tunggu keuntungan 2%</b>',
+    '<b>VIP Signal released\nFollow Order\nExecute each trade accordingly and wait for the 2% profit</b>'
+  );
 });
 
-// 5:00 PM WAT = 16:00 UTC
+// 5:00 PM WAT = 16:00 UTC — Good night
 cron.schedule('0 16 * * *', function () {
   console.log('[CRON] 5:00 PM WAT — Good night');
-  sendTo(GROUP_ID, '<b>Selamat malam semua anggota! \uD83C\uDF19\nIstirahat yang baik, tidur nyenyak, dan semoga bermimpi indah. Sampai jumpa besok dengan sinyal-sinyal menguntungkan!</b>');
-  sendTo(GROUP_EN, '<b>Good night to all members! \uD83C\uDF19\nRest well, sleep tight, and have a wonderful dream. See you tomorrow with more profitable signals!</b>');
+  broadcast(
+    '<b>Selamat malam semua anggota! \uD83C\uDF19\nIstirahat yang baik, tidur nyenyak, dan semoga bermimpi indah. Sampai jumpa besok dengan sinyal-sinyal menguntungkan!</b>',
+    '<b>Good night to all members! \uD83C\uDF19\nRest well, sleep tight, and have a wonderful dream. See you tomorrow with more profitable signals!</b>'
+  );
 });
 
-console.log('[BOT] All cron jobs registered. Scheduler + moderation + self-ping active.');
+console.log('[BOT] All systems active — 4 groups | 8 cron jobs | silent lock | auto-moderation | self-ping.');
